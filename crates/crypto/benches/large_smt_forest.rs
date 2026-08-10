@@ -18,7 +18,10 @@ use miden_field::Word;
 
 use crate::common::{
     config::{DEFAULT_MEASUREMENT_TIME, DEFAULT_SAMPLE_SIZE},
-    data::{generate_smt_entries_sequential, generate_test_keys_sequential},
+    data::{
+        WordPattern, generate_smt_entries_sequential, generate_test_keys_sequential,
+        generate_word_pattern,
+    },
 };
 
 // CONSTANTS
@@ -29,6 +32,12 @@ const BATCH_SIZE: usize = 10_000;
 
 /// The number of trees we update in a single whole-forest batch.
 const TREES_PER_BATCH: usize = 50;
+
+/// The number of lineages populated for the multi-tree entries benchmark.
+const ENTRIES_BENCHMARK_LINEAGES: usize = 100;
+
+/// The number of versions populated per lineage for the multi-tree entries benchmark.
+const ENTRIES_BENCHMARK_VERSIONS: u64 = 100;
 
 // SETUP FUNCTIONALITY
 // ================================================================================================
@@ -57,6 +66,34 @@ impl ForestSetup<ForestPersistentBackend> {
 fn generate_tree_update_batch(count: usize) -> SmtUpdateBatch {
     let entries = generate_smt_entries_sequential(count);
     SmtUpdateBatch::from(entries.into_iter())
+}
+
+/// Generates a tree update batch with stable keys and values unique to `version`.
+///
+/// Unlike [`generate_tree_update_batch`], repeated calls to this function produce actual changes
+/// to the tree. This makes it suitable for populating multiple versions of a lineage while keeping
+/// the number of entries in each version fixed at `count`.
+fn generate_tree_update_batch_for_version(count: usize, version: u64) -> SmtUpdateBatch {
+    let value_offset = version * count as u64;
+    let entries = generate_test_keys_sequential(count).into_iter().enumerate().map(|(i, key)| {
+        let value = generate_word_pattern(value_offset + i as u64 + 4, WordPattern::Sequential);
+        (key, value)
+    });
+    SmtUpdateBatch::from(entries)
+}
+
+/// Generates a forest update batch containing `count` updates for every provided lineage.
+fn generate_forest_update_batch_per_lineage(
+    lineages: &[LineageId],
+    count: usize,
+    version: u64,
+) -> SmtForestUpdateBatch {
+    let batch = generate_tree_update_batch_for_version(count, version);
+    let mut updates = SmtForestUpdateBatch::empty();
+    for lineage in lineages {
+        *updates.operations(*lineage) = batch.clone();
+    }
+    updates
 }
 
 /// Generates a forest update batch containing `count` entries which may be additions or removals
@@ -148,6 +185,38 @@ benchmark_with_setup_data! {
         let version = 0;
         setup.forest.add_lineage(lineage, version, batch).unwrap();
         let tree = TreeId::new(lineage, version);
+        (setup, tree)
+    },
+    |b: &mut criterion::Bencher, (setup, tree): &(ForestSetup<_>, TreeId)| {
+        b.iter(|| {
+            hint::black_box(
+                setup.forest.entries(*tree).unwrap().map(|e| e.unwrap()).collect::<Vec<_>>()
+            );
+        })
+    }
+}
+
+// Measures iteration over the latest version of a tree in a forest populated with multiple
+// lineages and multiple versions per lineage. Every version applies BATCH_SIZE updates while
+// retaining BATCH_SIZE entries in the tree.
+benchmark_with_setup_data! {
+    large_smt_forest_persistent_entries_current_tree_populated_forest,
+    DEFAULT_MEASUREMENT_TIME,
+    DEFAULT_SAMPLE_SIZE,
+    "large_smt_forest_persistent_entries_current_tree_populated_forest",
+    || {
+        let mut setup = ForestSetup::new_persistent();
+        let lineages = generate_lineages(ENTRIES_BENCHMARK_LINEAGES);
+
+        let initial_batch = generate_forest_update_batch_per_lineage(&lineages, BATCH_SIZE, 0);
+        setup.forest.add_lineages(0, initial_batch).unwrap();
+
+        for version in 1..ENTRIES_BENCHMARK_VERSIONS {
+            let batch = generate_forest_update_batch_per_lineage(&lineages, BATCH_SIZE, version);
+            setup.forest.update_forest(version, batch).unwrap();
+        }
+
+        let tree = TreeId::new(lineages[0], ENTRIES_BENCHMARK_VERSIONS - 1);
         (setup, tree)
     },
     |b: &mut criterion::Bencher, (setup, tree): &(ForestSetup<_>, TreeId)| {
@@ -427,6 +496,7 @@ criterion_group!(
     large_smt_forest_persistent_entry_count_current_tree,
     large_smt_forest_persistent_entry_count_historical_tree,
     large_smt_forest_persistent_entries_current_tree,
+    large_smt_forest_persistent_entries_current_tree_populated_forest,
     large_smt_forest_persistent_entries_historical_tree,
     large_smt_forest_persistent_add_lineage,
     large_smt_forest_persistent_add_lineages_sequential,
