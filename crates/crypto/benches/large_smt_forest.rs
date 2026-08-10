@@ -34,10 +34,13 @@ const BATCH_SIZE: usize = 10_000;
 const TREES_PER_BATCH: usize = 50;
 
 /// The number of lineages populated for the multi-tree entries benchmark.
-const ENTRIES_BENCHMARK_LINEAGES: usize = 100;
+const ENTRIES_BENCHMARK_LINEAGES: usize = 1000;
 
 /// The number of versions populated per lineage for the multi-tree entries benchmark.
-const ENTRIES_BENCHMARK_VERSIONS: u64 = 100;
+const ENTRIES_BENCHMARK_VERSIONS: u64 = 1000;
+
+/// The number of entries to modify in a single version of updates.
+const PER_VERSION_BATCH_SIZE: usize = 10;
 
 // SETUP FUNCTIONALITY
 // ================================================================================================
@@ -208,11 +211,12 @@ benchmark_with_setup_data! {
         let mut setup = ForestSetup::new_persistent();
         let lineages = generate_lineages(ENTRIES_BENCHMARK_LINEAGES);
 
-        let initial_batch = generate_forest_update_batch_per_lineage(&lineages, BATCH_SIZE, 0);
+        let initial_batch = generate_forest_update_batch_per_lineage(&lineages, PER_VERSION_BATCH_SIZE, 0);
         setup.forest.add_lineages(0, initial_batch).unwrap();
 
         for version in 1..ENTRIES_BENCHMARK_VERSIONS {
-            let batch = generate_forest_update_batch_per_lineage(&lineages, BATCH_SIZE, version);
+            println!("Populating version {}", version);
+            let batch = generate_forest_update_batch_per_lineage(&lineages, PER_VERSION_BATCH_SIZE, version);
             setup.forest.update_forest(version, batch).unwrap();
         }
 
